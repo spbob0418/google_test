@@ -12,7 +12,8 @@ import datetime
 
 import torch
 import torch.distributed as dist
-
+import subprocess
+import socket
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -168,19 +169,19 @@ def _load_checkpoint_for_ema(model_ema, checkpoint):
     model_ema._load_checkpoint(mem_file)
 
 
-def setup_for_distributed(is_master):
-    """
-    This function disables printing when not in master process
-    """
-    import builtins as __builtin__
-    builtin_print = __builtin__.print
+# def setup_for_distributed(is_master):
+#     """
+#     This function disables printing when not in master process
+#     """
+#     import builtins as __builtin__
+#     builtin_print = __builtin__.print
 
-    def print(*args, **kwargs):
-        force = kwargs.pop('force', False)
-        if is_master or force:
-            builtin_print(*args, **kwargs)
+#     def print(*args, **kwargs):
+#         force = kwargs.pop('force', False)
+#         if is_master or force:
+#             builtin_print(*args, **kwargs)
 
-    __builtin__.print = print
+#     __builtin__.print = print
 
 
 def is_dist_avail_and_initialized():
@@ -203,35 +204,74 @@ def get_rank():
     return dist.get_rank()
 
 
-def is_main_process():
-    return get_rank() == 0
+# def is_main_process():
+#     return get_rank() == 0
 
 
-def save_on_master(*args, **kwargs):
-    if is_main_process():
-        torch.save(*args, **kwargs)
+# def save_on_master(*args, **kwargs):
+#     if is_main_process():
+#         torch.save(*args, **kwargs)
 
 
-def init_distributed_mode(args):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        args.rank = int(os.environ["RANK"])
-        args.world_size = int(os.environ['WORLD_SIZE'])
-        args.gpu = int(os.environ['LOCAL_RANK'])
-    elif 'SLURM_PROCID' in os.environ:
-        args.rank = int(os.environ['SLURM_PROCID'])
-        args.gpu = args.rank % torch.cuda.device_count()
-    else:
-        print('Not using distributed mode')
-        args.distributed = False
-        return
+# def init_distributed_mode(args):
+#     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+#         args.rank = int(os.environ["RANK"])
+#         args.world_size = int(os.environ['WORLD_SIZE'])
+#         args.gpu = int(os.environ['LOCAL_RANK'])
+#     elif 'SLURM_PROCID' in os.environ:
+#         args.rank = int(os.environ['SLURM_PROCID'])
+#         args.gpu = args.rank % torch.cuda.device_count()
+#     else:
+#         print('Not using distributed mode')
+#         args.distributed = False
+#         return
 
-    args.distributed = True
+#     args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
-    args.dist_backend = 'nccl'
-    print('| distributed init (rank {}): {}'.format(
-        args.rank, args.dist_url), flush=True)
-    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
-    torch.distributed.barrier()
-    setup_for_distributed(args.rank == 0)
+#     torch.cuda.set_device(args.gpu)
+#     args.dist_backend = 'nccl'
+#     print('| distributed init (rank {}): {}'.format(
+#         args.rank, args.dist_url), flush=True)
+#     torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+#                                          world_size=args.world_size, rank=args.rank)
+#     torch.distributed.barrier()
+#     setup_for_distributed(args.rank == 0)
+
+# def setup_distributed(backend="nccl", port=None):
+#     """Initialize distributed training environment.
+#     support both slurm and torch.distributed.launch
+#     see torch.distributed.init_process_group() for more details
+#     """
+#     num_gpus = torch.cuda.device_count()
+
+
+#     if "SLURM_JOB_ID" in os.environ:
+#         rank = int(os.environ["SLURM_PROCID"])
+#         world_size = int(os.environ["SLURM_NTASKS"])
+#         node_list = os.environ["SLURM_NODELIST"]
+#         addr = subprocess.getoutput(f"scontrol show hostname {node_list} | head -n1")
+#         # specify master port
+#         if port is not None:
+#             os.environ["MASTER_PORT"] = str(port)
+#         elif "MASTER_PORT" not in os.environ:
+#             os.environ["MASTER_PORT"] = "12345"
+#         if "MASTER_ADDR" not in os.environ:
+#             os.environ["MASTER_ADDR"] = addr
+#         os.environ["WORLD_SIZE"] = str(world_size)
+#         os.environ["LOCAL_RANK"] = str(rank % num_gpus)
+#         os.environ["RANK"] = str(rank)
+#     else:
+#         rank = int(os.environ["RANK"])
+#         world_size = int(os.environ["WORLD_SIZE"])
+
+#     torch.cuda.set_device(rank % num_gpus)
+
+#     hostname = socket.gethostname()
+#     ddp_url = "tcp://{}:{}".format(hostname, os.environ["MASTER_PORT"])
+
+#     dist.init_process_group(
+#         backend=backend,
+#         init_method=ddp_url,
+#         world_size=world_size,
+#         rank=rank,
+#     )

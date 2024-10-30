@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/workspace/I-ViT/quant_train.py", line 19, in <module>
+    from qmodels import *
+  File "/workspace/I-ViT/qmodels/__init__.py", line 1, in <module>
+    from .quantization_utils import *
+  File "/workspace/I-ViT/qmodels/quantization_utils/__init__.py", line 1, in <module>
+    from .quant_modules import Quantized_Linear, QuantAct, IntLayerNorm, IntSoftmax, IntGELU, Quantizer, QuantMatMul
+ImportError: cannot import name 'IntLayerNorm' from 'qmodels.quantization_utils.quant_modules' (/workspace/I-ViT/qmodels/quantization_utils/quant_modules.py)

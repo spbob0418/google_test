@@ -25,9 +25,9 @@ def unfreeze_model(model):
     """
     unfreeze the activation range. Resursively invokes layer.unfix()
     """
-    # if type(model) in [QuantAct]:
-    #     model.unfix()
-    if type(model) == nn.Sequential:
+    if type(model) in [QuantAct]:
+        model.unfix()
+    elif type(model) == nn.Sequential:
         for n, m in model.named_children():
             unfreeze_model(m)
     elif type(model) == nn.ModuleList:

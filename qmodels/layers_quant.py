@@ -7,7 +7,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .quantization_utils import QuantLinear, QuantAct, QuantConv2d, IntGELU
+from .quantization_utils import Quantized_Linear, QuantAct, IntSoftmax, IntGELU, Quantizer, QuantMatMul
 
 
 def _ntuple(n):
@@ -116,41 +116,55 @@ class DropPath(nn.Module):
 class Mlp(nn.Module):
     def __init__(
             self,
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             in_features,
             hidden_features=None,
             out_features=None,
-            act_layer=IntGELU,
+            act_layer=False,
             drop=0.0):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         # self.fc1 = nn.Linear(in_features, hidden_features)
-        self.fc1 = QuantLinear(
-            in_features,
-            hidden_features
-        )
-        self.act = act_layer()
-        self.qact1 = QuantAct()
-        # self.fc2 = nn.Linear(hidden_features, out_features)
-        self.fc2 = QuantLinear(
-            hidden_features,
-            out_features
-        )
-        self.qact2 = QuantAct(16)
-        self.drop = nn.Dropout(drop)
+        self.fc1 = Quantized_Linear(
+                                weight_quantize_module=Quantizer(wbits, qdtype), 
+                                act_quantize_module=Quantizer(abits, qdtype), 
+                                grad_quantize_module=Quantizer(gbits, qdtype),
+                                in_features=in_features, 
+                                out_features=hidden_features, 
+                                bias=False
+                                )
 
-        self.qact_gelu = QuantAct()
+        self.act = act_layer
+
+        self.qact1 = QuantAct(abits, qdtype)
+        # self.fc2 = nn.Linear(hidden_features, out_features)
+        self.fc2 = Quantized_Linear(
+                                weight_quantize_module=Quantizer(wbits, qdtype), 
+                                act_quantize_module=Quantizer(abits, qdtype), 
+                                grad_quantize_module=Quantizer(gbits, qdtype),
+                                in_features=hidden_features, 
+                                out_features=out_features, 
+                                bias=False
+                                )
+        # self.qact2 = QuantAct(abits, qdtype)
+        # self.drop = nn.Dropout(drop)
+
+        # self.qact_gelu = QuantAct()
 
     def forward(self, x, act_scaling_factor):
-        x, act_scaling_factor = self.fc1(x, act_scaling_factor)
-        x, act_scaling_factor = self.qact_gelu(x, act_scaling_factor)
-        x, act_scaling_factor = self.act(x, act_scaling_factor)
-        x, act_scaling_factor = self.qact1(x, act_scaling_factor)
-        x = self.drop(x)
-        x, act_scaling_factor = self.fc2(x, act_scaling_factor)
-        x, act_scaling_factor = self.qact2(x, act_scaling_factor)
-        x = self.drop(x)
-        return x, act_scaling_factor
+        x = self.fc1(x, act_scaling_factor)
+        # x, act_scaling_factor = self.qact_gelu(x, act_scaling_factor)
+        x = self.act(x)
+        x, act_scaling_factor = self.qact1(x)
+        # x = self.drop(x)
+        x = self.fc2(x, act_scaling_factor)
+        # x, act_scaling_factor = self.qact2(x, act_scaling_factor)
+        # x = self.drop(x)
+        return x
 
 
 class PatchEmbed(nn.Module):
@@ -169,29 +183,45 @@ class PatchEmbed(nn.Module):
 
         self.norm_layer = norm_layer
 
-        self.proj = QuantConv2d(
+        # self.proj = QuantConv2d(
+        #     in_chans,
+        #     embed_dim,
+        #     kernel_size=patch_size,
+        #     stride=patch_size,
+        # )
+
+        self.proj = nn.Conv2d(
             in_chans,
             embed_dim,
             kernel_size=patch_size,
             stride=patch_size,
         )
-        if self.norm_layer:
-            self.qact_before_norm = QuantAct()
-            self.norm = norm_layer(embed_dim)
-        self.qact = QuantAct(16)
+
+        # if self.norm_layer:
+        #     self.qact_before_norm = QuantAct()
+        #     self.norm = norm_layer(embed_dim)
+        # self.qact = QuantAct(16)
 
 
-    def forward(self, x, act_scaling_factor):
+    # def forward(self, x, act_scaling_factor):
+    #     B, C, H, W = x.shape
+    #     # FIXME look at relaxing size constraints
+    #     assert (
+    #         H == self.img_size[0] and W == self.img_size[1]
+    #     ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+    #     x, act_scaling_factor = self.proj(x, act_scaling_factor)
+    #     x = x.flatten(2).transpose(1, 2)
+    #     if self.norm_layer:
+    #         x, act_scaling_factor = self.qact_before_norm(x, act_scaling_factor)
+    #         x, act_scaling_factor = self.norm(x, act_scaling_factor)
+    #     x, act_scaling_factor = self.qact(x, act_scaling_factor)
+    #     return x, act_scaling_factor
+
+    def forward(self, x):
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
-        assert (
-            H == self.img_size[0] and W == self.img_size[1]
-        ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x, act_scaling_factor = self.proj(x, act_scaling_factor)
-        x = x.flatten(2).transpose(1, 2)
-        if self.norm_layer:
-            x, act_scaling_factor = self.qact_before_norm(x, act_scaling_factor)
-            x, act_scaling_factor = self.norm(x, act_scaling_factor)
-        x, act_scaling_factor = self.qact(x, act_scaling_factor)
-        return x, act_scaling_factor
-
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj(x).flatten(2).transpose(1, 2)
+        # x, act_scaling_factor = self.qact(x, act_scaling_factor)
+        return x

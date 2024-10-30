@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .layers_quant import PatchEmbed, Mlp, DropPath, trunc_normal_
-from .quantization_utils import QuantLinear, QuantAct, QuantConv2d, IntLayerNorm, IntSoftmax, IntGELU, QuantMatMul
+from .quantization_utils import Quantized_Linear, QuantAct, IntSoftmax, IntGELU, Quantizer, QuantMatMul
 from .utils import load_weights_from_npz
 
 
@@ -23,6 +23,10 @@ __all__ = ['deit_tiny_patch16_224', 'deit_small_patch16_224', 'deit_base_patch16
 class Attention(nn.Module):
     def __init__(
             self,
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             dim,
             num_heads=8,
             qkv_bias=False,
@@ -35,20 +39,30 @@ class Attention(nn.Module):
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale or head_dim ** -0.5
 
-        self.qkv = QuantLinear(
-            dim,
-            dim * 3,
-            bias=qkv_bias
+        self.qkv = Quantized_Linear(
+                                    weight_quantize_module=Quantizer(wbits, qdtype), 
+                                    act_quantize_module=Quantizer(abits, qdtype), 
+                                    grad_quantize_module=Quantizer(gbits, qdtype),
+                                    in_features=dim, 
+                                    out_features=dim * 3, 
+                                    bias=qkv_bias
+                                    )
+        
+        # self.qact1 = QuantAct(nbits, qdtype)
+        # self.qact_attn1 = QuantAct(nbits, qdtype)
+        self.qact2 = QuantAct(abits, qdtype)
+        self.proj = Quantized_Linear(
+                                weight_quantize_module=Quantizer(wbits, qdtype), 
+                                act_quantize_module=Quantizer(abits, qdtype), 
+                                grad_quantize_module=Quantizer(gbits, qdtype),
+                                in_features=dim, 
+                                out_features=dim, 
+                                bias=False
         )
-        self.qact1 = QuantAct()
-        self.qact_attn1 = QuantAct()
-        self.qact2 = QuantAct()
-        self.proj = QuantLinear(
-            dim,
-            dim
-        )
-        self.qact3 = QuantAct(16)
-        self.qact_softmax = QuantAct()
+        self.qact3 = QuantAct(abits, qdtype)
+        # self.qact_softmax = QuantAct()
+
+        ##not used yet 
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
         self.int_softmax = IntSoftmax(16)
@@ -58,8 +72,12 @@ class Attention(nn.Module):
 
     def forward(self, x, act_scaling_factor):
         B, N, C = x.shape
-        x, act_scaling_factor = self.qkv(x, act_scaling_factor)
-        x, act_scaling_factor_1 = self.qact1(x, act_scaling_factor)
+        x = self.qkv(x, act_scaling_factor) #quantized input, fp output
+        
+        # x, act_scaling_factor_1 = self.qact1(x)#Quantize output 
+
+        # x = x * act_scaling_factor_1 #dequantize 
+
         qkv = x.reshape(B, N, 3, self.num_heads, C //
                         self.num_heads).permute(2, 0, 3, 1, 4)  # (BN33)
         q, k, v = (
@@ -67,30 +85,41 @@ class Attention(nn.Module):
             qkv[1],
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
-        attn, act_scaling_factor = self.matmul_1(q, act_scaling_factor_1,
-                                                 k.transpose(-2, -1), act_scaling_factor_1)
-        attn = attn * self.scale
-        act_scaling_factor = act_scaling_factor * self.scale
-        attn, act_scaling_factor = self.qact_attn1(attn, act_scaling_factor)
 
-        attn, act_scaling_factor = self.int_softmax(attn, act_scaling_factor)
 
-        attn = self.attn_drop(attn)
-        x, act_scaling_factor = self.matmul_2(attn, act_scaling_factor,
-                                              v, act_scaling_factor_1)
-        x = x.transpose(1, 2).reshape(B, N, C)
+        #do not quantize qkv  
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        # attn = self.attn_drop(attn)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
 
-        x, act_scaling_factor = self.qact2(x, act_scaling_factor)
-        x, act_scaling_factor = self.proj(x, act_scaling_factor)
-        x, act_scaling_factor = self.qact3(x, act_scaling_factor)
-        x = self.proj_drop(x)
+        #quantize qkv --> not implemented yet #TODO: 
+        # attn, act_scaling_factor = self.matmul_1(q, act_scaling_factor_1,
+        #                                          k.transpose(-2, -1), act_scaling_factor_1)
+        # attn = attn * self.scale
+        # act_scaling_factor = act_scaling_factor * self.scale
+        # attn, act_scaling_factor = self.qact_attn1(attn, act_scaling_factor)
+        # attn, act_scaling_factor = self.int_softmax(attn, act_scaling_factor)
+        # attn = self.attn_drop(attn)
+        # x, act_scaling_factor = self.matmul_2(attn, act_scaling_factor,
+        #                                       v, act_scaling_factor_1)
+        # x = x.transpose(1, 2).reshape(B, N, C)
 
-        return x, act_scaling_factor
+        x, act_scaling_factor = self.qact2(x)
+        x = self.proj(x, act_scaling_factor) #quantized input, fp output
+        
+        # x = self.proj_drop(x)
+
+        return x
 
 
 class Block(nn.Module):
     def __init__(
             self,
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             dim,
             num_heads,
             mlp_ratio=4.0,
@@ -103,8 +132,12 @@ class Block(nn.Module):
             norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.qact1 = QuantAct()
+        self.qact1 = QuantAct(abits, qdtype)
         self.attn = Attention(
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -115,35 +148,48 @@ class Block(nn.Module):
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(
             drop_path) if drop_path > 0.0 else nn.Identity()
-        self.qact2 = QuantAct(16)
+        # self.qact2 = QuantAct(16)
         self.norm2 = norm_layer(dim)
-        self.qact3 = QuantAct()
+        self.qact3 = QuantAct(abits, qdtype)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             in_features=dim,
             hidden_features=mlp_hidden_dim,
+            out_features=None,
             act_layer=act_layer,
             drop=drop
         )
-        self.qact4 = QuantAct(16)
+        # self.qact4 = QuantAct(16)
 
-    def forward(self, x_1, act_scaling_factor_1):
-        x, act_scaling_factor = self.norm1(x_1, act_scaling_factor_1)
-        x, act_scaling_factor = self.qact1(x, act_scaling_factor)
-        x, act_scaling_factor = self.attn(x, act_scaling_factor)
-        x = self.drop_path(x)
-        x_2, act_scaling_factor_2 = self.qact2(x, act_scaling_factor, x_1, act_scaling_factor_1)
+    def forward(self, x):
+        residual_1 = x
+        x = self.norm1(x)
+        q_x, s_x = self.qact1(x)
+        x = self.attn(q_x, s_x)
 
-        x, act_scaling_factor = self.norm2(x_2, act_scaling_factor_2)
-        x, act_scaling_factor = self.qact3(x, act_scaling_factor)
-        x, act_scaling_factor = self.mlp(x, act_scaling_factor)
-        x = self.drop_path(x)
-        x, act_scaling_factor = self.qact4(x, act_scaling_factor, x_2, act_scaling_factor_2)
+        # x = self.drop_path(x)
+        # x_2, act_scaling_factor_2 = self.qact2(x, act_scaling_factor, x_1, act_scaling_factor_1)
+        x = residual_1 + x
 
-        return x, act_scaling_factor
+        residual_2 = x 
+        x = self.norm2(x)
+        q_x, s_x = self.qact3(x)
+        x = self.mlp(q_x, s_x) 
+
+        # x = self.drop_path(x)
+        # dq_x = q_x * s_x
+        x = residual_2 + x
+        # x, act_scaling_factor = self.qact4(x, act_scaling_factor, x_2, act_scaling_factor_2)
+
+        # return x, act_scaling_factor
+        return x
 
 
-class VisionTransformer(nn.Module):
+class LowBitVisionTransformer(nn.Module):
     """Vision Transformer
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
@@ -151,6 +197,10 @@ class VisionTransformer(nn.Module):
 
     def __init__(
             self,
+            abits, 
+            wbits, 
+            gbits,
+            qdtype,
             img_size=224,
             patch_size=16,
             in_chans=3,
@@ -173,7 +223,7 @@ class VisionTransformer(nn.Module):
         ) = embed_dim  # num_features for consistency with other models
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
 
-        self.qact_input = QuantAct()
+        # self.qact_input = QuantAct()
 
         self.patch_embed = PatchEmbed(
             img_size=img_size,
@@ -189,8 +239,8 @@ class VisionTransformer(nn.Module):
 
         self.pos_drop = nn.Dropout(p=drop_rate)
 
-        self.qact_pos = QuantAct(16)
-        self.qact1 = QuantAct(16)
+        # self.qact_pos = QuantAct(16)
+        # self.qact1 = QuantAct(16)
 
         dpr = [
             x.item() for x in torch.linspace(0, drop_path_rate, depth)
@@ -198,6 +248,10 @@ class VisionTransformer(nn.Module):
         self.blocks = nn.ModuleList(
             [
                 Block(
+                    abits=abits, 
+                    wbits=wbits, 
+                    gbits=gbits,
+                    qdtype=qdtype,
                     dim=embed_dim,
                     num_heads=num_heads,
                     mlp_ratio=mlp_ratio,
@@ -206,14 +260,14 @@ class VisionTransformer(nn.Module):
                     drop=drop_rate,
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
-                    act_layer=IntGELU,
+                    act_layer=nn.GELU(),
                     norm_layer=norm_layer
                 )
                 for i in range(depth)
             ]
         )
         self.norm = norm_layer(embed_dim)
-        self.qact2 = QuantAct()
+        # self.qact2 = QuantAct()
 
         # Representation layer
         if representation_size:
@@ -230,14 +284,8 @@ class VisionTransformer(nn.Module):
             self.pre_logits = nn.Identity()
 
         # Classifier head
-        self.head = (
-            QuantLinear(
-                self.num_features,
-                num_classes)
-            if num_classes > 0
-            else nn.Identity()
-        )
-        self.act_out = QuantAct()
+        self.head = nn.Linear(self.num_features, num_classes, bias=False)
+        # self.act_out = QuantAct()
         trunc_normal_(self.pos_embed, std=0.02)
         trunc_normal_(self.cls_token, std=0.02)
         self.apply(self._init_weights)
@@ -254,43 +302,47 @@ class VisionTransformer(nn.Module):
     def forward_features(self, x):
         B = x.shape[0]
 
-        x, act_scaling_factor = self.qact_input(x)
-        x, act_scaling_factor = self.patch_embed(x, act_scaling_factor)
+        # x, act_scaling_factor = self.qact_input(x)
+        x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(
             B, -1, -1
         )  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)  # share scaling_factor
 
-        x_pos, act_scaling_factor_pos = self.qact_pos(self.pos_embed)
-        x, act_scaling_factor = self.qact1(x, act_scaling_factor, x_pos, act_scaling_factor_pos)
-        x = self.pos_drop(x)
+        # x_pos, act_scaling_factor_pos = self.qact_pos(self.pos_embed)
+        # x = self.pos_drop(x)
 
         for blk in self.blocks:
-            x, act_scaling_factor = blk(x, act_scaling_factor)
+            x = blk(x)
 
-        x, act_scaling_factor = self.norm(x, act_scaling_factor)
+        x = self.norm(x)
         x = x[:, 0]
-        x, act_scaling_factor = self.qact2(x, act_scaling_factor)
+        # x, act_scaling_factor = self.qact2(x, act_scaling_factor)
         x = self.pre_logits(x)
 
-        return x, act_scaling_factor
+        # return x, act_scaling_factor
+        return x
 
     def forward(self, x):
-        x, act_scaling_factor = self.forward_features(x)
-        x, act_scaling_factor = self.head(x, act_scaling_factor)
+        x = self.forward_features(x)
+        x = self.head(x)
         #x, _ = self.act_out(x, act_scaling_factor)
         return x
 
 
-def deit_tiny_patch16_224(pretrained=False, **kwargs):
-    model = VisionTransformer(
+def deit_tiny_patch16_224(abits, wbits, gbits, qdtype, pretrained=False, **kwargs):
+    model = LowBitVisionTransformer(
+        abits=abits, 
+        wbits=wbits, 
+        gbits=gbits,
+        qdtype=qdtype,
         patch_size=16,
         embed_dim=192,
         depth=12,
         num_heads=3,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(IntLayerNorm, eps=1e-6),
+        norm_layer=nn.LayerNorm,
         **kwargs,
     )
     if pretrained:
@@ -303,15 +355,19 @@ def deit_tiny_patch16_224(pretrained=False, **kwargs):
     return model
 
 
-def deit_small_patch16_224(pretrained=False, **kwargs):
-    model = VisionTransformer(
+def deit_small_patch16_224(abits, wbits, gbits, qdtype, pretrained=False, **kwargs):
+    model = LowBitVisionTransformer(
+        abits=abits, 
+        wbits=wbits, 
+        gbits=gbits,
+        qdtype=qdtype,
         patch_size=16,
         embed_dim=384,
         depth=12,
         num_heads=6,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(IntLayerNorm, eps=1e-6),
+        norm_layer=nn.LayerNorm,
         **kwargs
     )
     if pretrained:
@@ -323,15 +379,19 @@ def deit_small_patch16_224(pretrained=False, **kwargs):
     return model
 
 
-def deit_base_patch16_224(pretrained=False, **kwargs):
-    model = VisionTransformer(
+def deit_base_patch16_224(abits, wbits, gbits, qdtype, pretrained=False, **kwargs):
+    model = LowBitVisionTransformer(
+        abits=abits, 
+        wbits=wbits, 
+        gbits=gbits,
+        qdtype=qdtype,
         patch_size=16,
         embed_dim=768,
         depth=12,
         num_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(IntLayerNorm, eps=1e-6),
+        norm_layer=nn.LayerNorm,
         **kwargs
     )
     if pretrained:
@@ -343,15 +403,19 @@ def deit_base_patch16_224(pretrained=False, **kwargs):
     return model
 
 
-def vit_base_patch16_224(pretrained=False, **kwargs):
-    model = VisionTransformer(
+def vit_base_patch16_224(abits, wbits, gbits, qdtype, pretrained=False, **kwargs):
+    model = LowBitVisionTransformer(
+        abits=abits, 
+        wbits=wbits, 
+        gbits=gbits,
+        qdtype=qdtype,
         patch_size=16,
         embed_dim=768,
         depth=12,
         num_heads=12,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(IntLayerNorm, eps=1e-6),
+        norm_layer=nn.LayerNorm,
         **kwargs
     )
     if pretrained:
@@ -362,15 +426,19 @@ def vit_base_patch16_224(pretrained=False, **kwargs):
     return model
 
 
-def vit_large_patch16_224(pretrained=False, **kwargs):
-    model = VisionTransformer(
+def vit_large_patch16_224(abits, wbits, gbits, qdtype, pretrained=False, **kwargs):
+    model = LowBitVisionTransformer(
+        abits=abits, 
+        wbits=wbits, 
+        gbits=gbits,
+        qdtype=qdtype,
         patch_size=16,
         embed_dim=1024,
         depth=24,
         num_heads=16,
         mlp_ratio=4,
         qkv_bias=True,
-        norm_layer=partial(IntLayerNorm, eps=1e-6),
+        norm_layer=nn.LayerNorm,
         **kwargs
     )
     if pretrained:

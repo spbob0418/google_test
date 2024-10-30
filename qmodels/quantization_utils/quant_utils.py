@@ -119,7 +119,7 @@ class SymmetricQuantFunction(Function):
         return grad_output.clone() / scale, None, None, None
 
 
-class floor_ste(Function):
+class floor_pass(Function):
     """
     Straight-through Estimator(STE) for torch.floor()
     """
