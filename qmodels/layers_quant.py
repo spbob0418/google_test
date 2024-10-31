@@ -157,11 +157,14 @@ class Mlp(nn.Module):
 
     def forward(self, x, act_scaling_factor):
         x = self.fc1(x, act_scaling_factor)
+        # print("1", x.shape)
         # x, act_scaling_factor = self.qact_gelu(x, act_scaling_factor)
         x = self.act(x)
+        # print("2", x.shape)
         x, act_scaling_factor = self.qact1(x)
         # x = self.drop(x)
         x = self.fc2(x, act_scaling_factor)
+        # print("3", x.shape)
         # x, act_scaling_factor = self.qact2(x, act_scaling_factor)
         # x = self.drop(x)
         return x

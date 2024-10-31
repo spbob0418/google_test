@@ -152,6 +152,7 @@ class Block(nn.Module):
         self.norm2 = norm_layer(dim)
         self.qact3 = QuantAct(abits, qdtype)
         mlp_hidden_dim = int(dim * mlp_ratio)
+        
         self.mlp = Mlp(
             abits, 
             wbits, 
@@ -166,6 +167,7 @@ class Block(nn.Module):
         # self.qact4 = QuantAct(16)
 
     def forward(self, x):
+       
         residual_1 = x
         x = self.norm1(x)
         q_x, s_x = self.qact1(x)

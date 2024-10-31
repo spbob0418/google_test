@@ -21,11 +21,32 @@ from utils import *
 
 import wandb
 
+#왜안될까요
+# os.environ["LD_LIBRARY_PATH"] = "/usr/lib/x86_64-linux-gnu:/usr/local/cuda-11.8/lib64:" + os.environ.get("LD_LIBRARY_PATH", "")
+
+# os.environ["NCCL_DEBUG"] = "INFO"
+# os.environ["NCCL_DEBUG_SUBSYS"] = "ALL"
+# # 피어 투 피어(P2P) 및 InfiniBand 비활성화
+# os.environ["NCCL_P2P_DISABLE"] = "1"
+# os.environ["NCCL_IB_DISABLE"] = "1"
+
+# # 타임아웃 시간을 증가시켜 통신 지연 문제 완화 (초 단위)
+# os.environ["NCCL_BLOCKING_WAIT"] = "1"
+# os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+# os.environ["NCCL_SOCKET_IFNAME"] = "^lo,docker0"
+# os.environ["NCCL_TIMEOUT"] = "150"
+
+# # GPU에서 직접 메모리 접근을 비활성화해 오류를 방지
+# os.environ["NCCL_SHM_DISABLE"] = "1"
+# os.environ["NCCL_NET_GDR_LEVEL"] = "PHB"
+
+
+
 DIST_PORT=6006
 WANDB_LOG = False
 WANDB_PROJ_NAME = 'forward&backward training'
-os.environ["TORCH_USE_CUDA_DSA"] = "1"
-os.environ['CUDA_VISIBLE_DEVICES'] = '4,5,6,7'
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 # os.environ['RANK'] = '4'
 os.environ['WORLD_SIZE'] = '4'
 # os.environ["MASTER_PORT"] = '6006'
@@ -246,6 +267,8 @@ def main(args):
                                   drop_rate=args.drop,
                                   drop_path_rate=args.drop_path)
     model.to(device)
+
+
 
     model_ema = None
     if args.model_ema:

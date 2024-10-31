@@ -86,6 +86,9 @@ class Quantized_Linear(nn.Linear):
         self.act_quantize_module = act_quantize_module
         self.grad_quantize_module = grad_quantize_module
 
+
+
+
     def forward(self, input, s_x):
         return _quantize_global.apply(input, s_x, self.weight, self.bias, self.weight_quantize_module,
                                       self.act_quantize_module, self.grad_quantize_module)
@@ -93,19 +96,25 @@ class Quantized_Linear(nn.Linear):
 
 class _quantize_global(torch.autograd.Function):
     def forward(ctx, x_3D, s_x, w_2D, bias=None, w_qmodule=None, a_qmodule=None, g_qmodule=None):
+
         x_2D = x_3D.view(-1, x_3D.size(-1)) #reshape to 2D
         s_x_expanded = s_x.view(1, -1).expand_as(x_2D) if s_x.dim() == 1 else s_x
         x_2D = x_2D * s_x_expanded #dequantize 
 
+        # print("x_3D", x_3D.shape)
+        # print("w_2D", w_2D.shape)
+
         weight_quant, s_weight_quant = w_qmodule(w_2D)
         input_quant, s_input_quant = a_qmodule(x_2D)
+        ctx.reshape_3D_size = x_3D.size()
+        ctx.save_for_backward = input_quant, s_input_quant, weight_quant, s_weight_quant
 
-        ctx.save_for_backward = x_2D, w_2D, s_input_quant, s_weight_quant
 
         ctx.g_qmodule = g_qmodule
         
         output = input_quant.matmul(weight_quant.t())
 
+        ctx.has_bias = bias is not None
         if bias is not None:
             output += bias.unsqueeze(0).expand_as(output)
 
@@ -119,30 +128,46 @@ class _quantize_global(torch.autograd.Function):
     @staticmethod
     def backward(ctx, g_3D):
         g_2D = g_3D.reshape(-1, g_3D.size(-1))
+        # print("g_3D", g_3D.shape) #g_3D torch.Size([256, 197, 384])
         grad_X = grad_W = grad_bias = None 
-        x, w, s_x, s_w = ctx.save_for_backward
+        q_x, s_x, q_w, s_w = ctx.save_for_backward
+
+        reshape_3D = ctx.reshape_3D_size
+        # print("q_x", q_x.shape) #torch.Size([50432, 1536])
+        # print("q_w", q_w.shape) #torch.Size([384, 1536])
 
         if ctx.g_qmodule is not None:
             g_2D_quant, s_g_2D_quant = ctx.g_qmodule(g_2D)
+            # print("g_2D_quant", g_2D_quant.shape) #g_2D_quant torch.Size([50432, 384])
 
 
         if ctx.g_qmodule is not None: #Forward & Backward Quantizaiton
-            grad_X = torch.matmul(g_2D_quant, w.to(g_2D_quant.dtype)).view(*g_2D_quant.size()[:-1], -1)
-            grad_X = grad_X * s_g_2D_quant * s_w
+            grad_X = torch.matmul(g_2D_quant, q_w.to(g_2D_quant.dtype))
+            # print("CP1 grad X", grad_X.shape)#torch.Size([50432, 1536])
+            grad_X = grad_X * s_g_2D_quant * s_w 
+            # print("CP2 grad X", grad_X.shape)#torch.Size([50432, 1536])
+            grad_X = grad_X.view(reshape_3D)
 
-            grad_W = torch.matmul(g_2D_quant.t(), x.to(g_2D_quant.dtype))
+            grad_W = torch.matmul(g_2D_quant.t(), q_x.to(g_2D_quant.dtype))
             grad_W = grad_W * s_g_2D_quant * s_x
-
-            grad_bias = g_2D.sum(dim=0)
+            
+            if ctx.has_bias:
+                grad_bias = g_2D.sum(dim=0)
+            else:
+                grad_bias = None
 
         else: #Only Forward Quantization
-            grad_X = torch.matmul(g_2D, w.to(g_2D.dtype)).view(*g_2D.size()[:-1], -1)
+            grad_X = torch.matmul(g_2D, q_w.to(g_2D.dtype))
             grad_X = grad_X * s_w
+            grad_X = grad_X.view(reshape_3D)
 
-            grad_W = torch.matmul(g_2D.t(), x.to(g_2D.dtype))
+            grad_W = torch.matmul(g_2D.t(), q_x.to(g_2D.dtype))
             grad_W = grad_W * s_x
-
-            grad_bias = g_2D.sum(dim=0)
+            
+            if ctx.has_bias:
+                grad_bias = g_2D.sum(dim=0)
+            else:
+                grad_bias = None
 
         return grad_X, None, grad_W, grad_bias, None, None, None
         
