@@ -8,7 +8,7 @@ DIR=output/fully_quantized_training
 mkdir -p ${DIR}
 
 # Run the distributed training
-python3 /home/google_test/quant_train.py \
+python3 /home/I-VIT_google/google_test/quant_train.py \
 --abits 4 \
 --wbits 4 \
 --qdtype int8 \

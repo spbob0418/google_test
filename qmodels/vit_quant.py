@@ -164,6 +164,7 @@ class Block(nn.Module):
         # self.qact4 = QuantAct(16)
 
     def forward(self, x):
+        
        
         residual_1 = x
         x = self.norm1(x)

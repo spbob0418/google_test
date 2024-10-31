@@ -96,7 +96,7 @@ class _quantize_global(torch.autograd.Function):
 
         x_2D = x_3D.view(-1, x_3D.size(-1)) #reshape to 2D
         # s_x_expanded = s_x.view(1, -1).expand_as(x_2D) if s_x.dim() == 1 else s_x
-        x_2D = x_2D * s_x_expanded #dequantize 
+        x_2D = x_2D * s_x #dequantize 
 
         # print("x_3D", x_3D.shape)
         # print("w_2D", w_2D.shape)
@@ -104,7 +104,9 @@ class _quantize_global(torch.autograd.Function):
         weight_quant, s_weight_quant = w_qmodule(w_2D)
         input_quant, s_input_quant = a_qmodule(x_2D)
         ctx.reshape_3D_size = x_3D.size()
-        ctx.save_for_backward = input_quant, s_input_quant, weight_quant, s_weight_quant
+        # ctx.save_for_backward = input_quant, s_input_quant, weight_quant, s_weight_quant
+        ctx.save_for_backward = x_2D, 1, w_2D, 1
+
 
 
         ctx.g_qmodule = g_qmodule
@@ -134,19 +136,19 @@ class _quantize_global(torch.autograd.Function):
         # print("q_x", q_x.shape) #torch.Size([50432, 1536])
         # print("q_w", q_w.shape) #torch.Size([384, 1536])
 
-        if ctx.g_qmodule is not None:
+        if ctx.g_qmodule(g_2D) is not None:
             g_2D_quant, s_g_2D_quant = ctx.g_qmodule(g_2D)
             # print("g_2D_quant", g_2D_quant.shape) #g_2D_quant torch.Size([50432, 384])
 
 
-        if ctx.g_qmodule is not None: #Forward & Backward Quantizaiton
-            grad_X = torch.matmul(g_2D_quant, q_w.to(g_2D_quant.dtype))
+        if ctx.g_qmodule(g_2D) is not None: #Forward & Backward Quantizaiton
+            grad_X = torch.matmul(g_2D_quant, q_w)
             # print("CP1 grad X", grad_X.shape)#torch.Size([50432, 1536])
             grad_X = grad_X * s_g_2D_quant * s_w 
             # print("CP2 grad X", grad_X.shape)#torch.Size([50432, 1536])
             grad_X = grad_X.view(reshape_3D)
 
-            grad_W = torch.matmul(g_2D_quant.t(), q_x.to(g_2D_quant.dtype))
+            grad_W = torch.matmul(g_2D_quant.t(), q_x)
             grad_W = grad_W * s_g_2D_quant * s_x
             
             if ctx.has_bias:
@@ -155,17 +157,23 @@ class _quantize_global(torch.autograd.Function):
                 grad_bias = None
 
         else: #Only Forward Quantization
-            grad_X = torch.matmul(g_2D, q_w.to(g_2D.dtype))
+            grad_X = torch.matmul(g_2D, q_w)
             grad_X = grad_X * s_w
             grad_X = grad_X.view(reshape_3D)
 
-            grad_W = torch.matmul(g_2D.t(), q_x.to(g_2D.dtype))
+            grad_W = torch.matmul(g_2D.t(), q_x)
             grad_W = grad_W * s_x
             
             if ctx.has_bias:
                 grad_bias = g_2D.sum(dim=0)
             else:
                 grad_bias = None
+
+        print("grad_X.max",grad_X.max())
+        print("grad_X.min",grad_X.min())
+        print("grad_W.max",grad_W.max())
+        print("grad_W.min",grad_W.min())
+
 
         return grad_X, None, grad_W, grad_bias, None, None, None
         

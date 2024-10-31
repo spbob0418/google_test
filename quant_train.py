@@ -375,6 +375,7 @@ def train(args, wandb_log, node_rank, train_loader, model, criterion, optimizer,
         [batch_time, data_time, losses],
         prefix="Epoch: [{}]".format(epoch))
 
+
     # switch to train mode
     model.train()
     # unfreeze_model(model)
@@ -382,6 +383,7 @@ def train(args, wandb_log, node_rank, train_loader, model, criterion, optimizer,
     end = time.time()
     with torch.autograd.detect_anomaly():
         for i, (data, target) in enumerate(train_loader):
+            # print(optimizer.param_groups[0]['lr'])
             # measure data loading time
             data_time.update(time.time() - end)
 
