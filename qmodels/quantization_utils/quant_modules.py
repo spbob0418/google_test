@@ -61,7 +61,7 @@ class Quantizer():
         if self.symmetric:
             max_x = x.abs().max().detach()
             scale = max_x / self.Qp
-            x = x * scale 
+            x = x / scale 
             x = round_pass(x.clamp_(self.Qn, self.Qp)) 
             
         else: #Asymmetric
@@ -86,9 +86,6 @@ class Quantized_Linear(nn.Linear):
         self.act_quantize_module = act_quantize_module
         self.grad_quantize_module = grad_quantize_module
 
-
-
-
     def forward(self, input, s_x):
         return _quantize_global.apply(input, s_x, self.weight, self.bias, self.weight_quantize_module,
                                       self.act_quantize_module, self.grad_quantize_module)
@@ -98,7 +95,7 @@ class _quantize_global(torch.autograd.Function):
     def forward(ctx, x_3D, s_x, w_2D, bias=None, w_qmodule=None, a_qmodule=None, g_qmodule=None):
 
         x_2D = x_3D.view(-1, x_3D.size(-1)) #reshape to 2D
-        s_x_expanded = s_x.view(1, -1).expand_as(x_2D) if s_x.dim() == 1 else s_x
+        # s_x_expanded = s_x.view(1, -1).expand_as(x_2D) if s_x.dim() == 1 else s_x
         x_2D = x_2D * s_x_expanded #dequantize 
 
         # print("x_3D", x_3D.shape)
@@ -112,7 +109,8 @@ class _quantize_global(torch.autograd.Function):
 
         ctx.g_qmodule = g_qmodule
         
-        output = input_quant.matmul(weight_quant.t())
+        # output = input_quant.matmul(weight_quant.t())
+        output = torch.matmul(input_quant, weight_quant.t())
 
         ctx.has_bias = bias is not None
         if bias is not None:

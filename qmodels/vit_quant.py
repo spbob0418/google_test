@@ -57,7 +57,7 @@ class Attention(nn.Module):
                                 grad_quantize_module=Quantizer(gbits, qdtype),
                                 in_features=dim, 
                                 out_features=dim, 
-                                bias=False
+                                bias=True
         )
         self.qact3 = QuantAct(abits, qdtype)
         # self.qact_softmax = QuantAct()
@@ -80,6 +80,7 @@ class Attention(nn.Module):
 
         qkv = x.reshape(B, N, 3, self.num_heads, C //
                         self.num_heads).permute(2, 0, 3, 1, 4)  # (BN33)
+
         q, k, v = (
             qkv[0],
             qkv[1],
@@ -87,23 +88,19 @@ class Attention(nn.Module):
         )  # make torchscript happy (cannot use tensor as tuple)
 
 
-        #do not quantize qkv  
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        # attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # #do not quantize qkv  
+        # attn = (q @ k.transpose(-2, -1)) * self.scale
+        # attn = attn.softmax(dim=-1)
+        # # attn = self.attn_drop(attn)
+        # x = (attn @ v).transpose(1, 2).reshape(B, N, C)
 
-        #quantize qkv --> not implemented yet #TODO: 
-        # attn, act_scaling_factor = self.matmul_1(q, act_scaling_factor_1,
-        #                                          k.transpose(-2, -1), act_scaling_factor_1)
-        # attn = attn * self.scale
-        # act_scaling_factor = act_scaling_factor * self.scale
-        # attn, act_scaling_factor = self.qact_attn1(attn, act_scaling_factor)
-        # attn, act_scaling_factor = self.int_softmax(attn, act_scaling_factor)
-        # attn = self.attn_drop(attn)
-        # x, act_scaling_factor = self.matmul_2(attn, act_scaling_factor,
-        #                                       v, act_scaling_factor_1)
-        # x = x.transpose(1, 2).reshape(B, N, C)
+        ######빠르다길래 바꿔봄#####TODO: 
+        x = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=0.
+            )
+        x = x.transpose(1, 2).reshape(B, N, C)
+        ######빠르다길래 바꿔봄#####TODO: 
 
         x, act_scaling_factor = self.qact2(x)
         x = self.proj(x, act_scaling_factor) #quantized input, fp output
@@ -313,6 +310,7 @@ class LowBitVisionTransformer(nn.Module):
 
         # x_pos, act_scaling_factor_pos = self.qact_pos(self.pos_embed)
         # x = self.pos_drop(x)
+        x = x + self.pos_embed
 
         for blk in self.blocks:
             x = blk(x)
@@ -320,7 +318,7 @@ class LowBitVisionTransformer(nn.Module):
         x = self.norm(x)
         x = x[:, 0]
         # x, act_scaling_factor = self.qact2(x, act_scaling_factor)
-        x = self.pre_logits(x)
+        # x = self.pre_logits(x)
 
         # return x, act_scaling_factor
         return x
